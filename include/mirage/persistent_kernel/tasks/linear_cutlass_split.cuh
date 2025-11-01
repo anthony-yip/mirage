@@ -153,11 +153,12 @@ __device__ __forceinline__ void linear_prefetch(void const *input_ptr,
         cp_async_fence();
         time5 = clock64();
       }
+      size_t time_end_launch = clock64();
       if (l_clock_cycles_compute != nullptr) {
         l_clock_cycles_compute[0] = time3 - time2;
         l_clock_cycles_compute[1] = time4 - time3;
         l_clock_cycles_compute[2] = time5 - time4;
-        l_clock_cycles_compute[3] = time_start_launch - time1;
+        l_clock_cycles_compute[4] = time_end_launch - time_start_launch;
       }
   
 }
@@ -497,12 +498,12 @@ __device__ __noinline__ void linear_main(void const *input_ptr,
         linear_prefetch<T_, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, O_STRIDE, PIPE_MAX>(input_ptr_next, weight_ptr_next, smem_next, l_clock_cycles_compute);
         end_warmup = clock64();
       } else {
-        end_warmup = 707;
+        end_warmup = 747;
         start_warmup = 0;
       }
 
 
-      l_clock_cycles_compute[4] = end_warmup - start_warmup;
+      // l_clock_cycles_compute[4] = end_warmup - start_warmup;
       l_clock_cycles_compute[5] = end_warmup_wait_sync - start_warmup_wait;
 
 
