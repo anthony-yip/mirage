@@ -176,14 +176,14 @@ __device__ __forceinline__ bool
         }
       }
       config.step[request_id] = step + num_tokens;
-#ifdef MPK_ENABLE_PROFILING
-      if (true) {
-#else
+// #ifdef MPK_ENABLE_PROFILING
+//       if (true) {
+// #else
       if ((step + num_tokens >= config.max_seq_length) ||
           ((config.tokens[request_id * MPK_MAX_SEQ_LENGTH + step +
                           num_tokens] == config.eos_token_id) &&
            (step + num_tokens >= prompt_len))) {
-#endif
+// #endif
         // Request is done
         config.request_ids[i] = -1;
         // Free pages
@@ -250,6 +250,8 @@ __device__ __forceinline__ bool
     }
   }
 
+
+
   // Add new prefill requests until we reach capacity
   while (num_reqs < MPK_MAX_NUM_BATCHED_REQUESTS &&
          num_tokens < MPK_MAX_NUM_BATCHED_TOKENS) {
@@ -290,6 +292,13 @@ __device__ __forceinline__ bool
     config.qo_indptr_buffer[i] = num_tokens;
     config.paged_kv_indptr_buffer[i] = num_pages;
   }
+
+  for (int i = 0; i <= MPK_MAX_NUM_BATCHED_REQUESTS; i++) {
+    // printf("request_ids[%d] is %d\n", i, config.request_ids[i]);
+    printf("%d, ", config.qo_indptr_buffer[i]);
+    // printf("paged_kv_indptr_buffer[%d] is %d\n", i, config.paged_kv_indptr_buffer[i]);
+  }
+  printf("\n");
 
   // Step 5: update page head tail
   *config.page_queue_head = page_queue_head;
@@ -1094,7 +1103,7 @@ extern "C" void init_persistent_kernel(std::vector<void *> meta_tensors,
   global_runtime_config.per_worker_queue_len = 1024;
   global_runtime_config.per_sched_queue_len = 1024;
   global_runtime_config.num_gpus = npes;
-  global_runtime_config.my_gpu_id = mype;
+  global_runtime_config.my_gpu_id = 4;
   global_runtime_config.num_graphs = 1;
   global_runtime_config.split_worker_scheduler = true;
 
@@ -1264,6 +1273,9 @@ extern "C" void launch_persistent_kernel() {
                        global_runtime_config.num_remote_schedulers;
   if (global_runtime_config.split_worker_scheduler) {
     printf("worker kernel & scheduler kernel\n");
+    printf("Number of workers: %d\n", global_runtime_config.num_workers);
+    printf("Number of local schedulers: %d\n", global_runtime_config.num_local_schedulers);
+    printf("Number of remote schedulers: %d\n", global_runtime_config.num_remote_schedulers);
     printf("smem size: %d\n", MAX_DYNAMIC_SHARED_MEMORY_SIZE);
 
     // The split kernel does not support NVSHMEM because

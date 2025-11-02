@@ -101,11 +101,13 @@ if __name__ == "__main__":
         world_size = 1
         rank = 0
 
+
     if world_size > 1:
         dist.init_process_group(backend="nccl", init_method="env://")
     global print
     if rank != 0:
         print = lambda *_, **__: None
+    rank = 4
 
     print("Input arguments:", args)
     print(f"world_size({world_size}) rank({rank})")
@@ -207,7 +209,7 @@ if __name__ == "__main__":
 
         if args.profiling:
             profiler_tensor = torch.zeros(
-                3000 * 128, dtype=torch.uint64, device="cuda"
+                300000 * 128, dtype=torch.uint64, device="cuda"
             ).contiguous()
         else:
             profiler_tensor = None
