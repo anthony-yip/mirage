@@ -23,6 +23,9 @@
 #include "smem_layout.cuh"
 #include "tasks/common/common_header.cuh"
 
+#define PRINT_SHARED_MEMORY_USAGE 0
+#define PRINT_WARMUP_TIMING 0
+
 namespace kernel {
 
 // NOTE(Jinchen): this task implements the paged attention where a causal mask
@@ -55,6 +58,7 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
     void const *sin_ptr,
     float q_eps,
     float k_eps) {
+  size_t whole_function_start = clock64();
   constexpr int NUM_QO_PER_KV = NUM_QO_HEADS / NUM_KV_HEADS;
 
   // NOTE(Jinchen): The input is a packed QKV tensor, which may contain
@@ -85,6 +89,8 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
     return;
   }
   int const num_tokens = last_token_pos - first_token_pos;
+
+
 
   // NOTE(Jinchen): to simplify the implementation, we assume that the metadata
   // of the paged KV cache includes the new tokens, i.e., spaces are allocated
@@ -186,7 +192,12 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
   constexpr size_t S_TOTAL_OFFSET = S_O_BUFFER_OFFSET + S_O_BUFFER_SIZE;
   static_assert(S_TOTAL_OFFSET <=
                 mirage::runtime::MAX_DYNAMIC_SHARED_MEMORY_SIZE);
-
+#if PRINT_SHARED_MEMORY_USAGE
+  if (threadIdx.x == 0) {
+    printf("MAX_DYNAMIC_SHARED_MEMORY_SIZE: %llu\n", mirage::runtime::MAX_DYNAMIC_SHARED_MEMORY_SIZE);
+    printf("PAGED ATTENTION TOTAL OFFSET in block %d: %llu\n", blockIdx.x, S_TOTAL_OFFSET);
+  }
+#endif
   extern __shared__ char smem[];
 
   T *zero_buf = reinterpret_cast<T *>(smem + ZERO_BUFFER_OFFSET);
@@ -202,6 +213,7 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
   float *s_m_buffer = reinterpret_cast<float *>(smem + S_M_BUFFER_OFFSET);
   float *s_d_buffer = reinterpret_cast<float *>(smem + S_D_BUFFER_OFFSET);
   float *s_o_buffer = reinterpret_cast<float *>(smem + S_O_BUFFER_OFFSET);
+
 
   // STensors' layouts
   using ZeroBufferSmem = smem_row<T, 0, 0, 0, 1, 8, 8>;
@@ -224,6 +236,7 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
   // so that we access a single page in one iteration
   static_assert(PAGE_SIZE % KV_TILE_SIZE == 0);
 
+
 #pragma unroll
   for (int chunk_idx = threadIdx.x;
        chunk_idx < num_tokens * NUM_QO_PER_KV * HEAD_DIM / CP_CHUNK_SIZE;
@@ -237,12 +250,16 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
   }
 
   int page_idx_0 = page_indices[0];
+  int num_loaded_from_kv_cache = 0;
+  int num_loaded_from_qkv = 0;
+  int warmup_launch_start = clock64();
 #pragma unroll
   for (int chunk_idx = threadIdx.x;
        chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
        chunk_idx += NUM_THREADS) {
     int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
     int col = (chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
+    // cp_finished_seq_len is always 0 here
     if (dst_row + cp_finished_seq_len < seq_len - num_tokens) {
       // load from KV Cache
       // int page_idx = page_indices[(dst_row + cp_finished_seq_len) /
@@ -251,13 +268,16 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
       int src_row = page_idx_0 * PAGE_SIZE + page_offset;
       load_smem(k_buffer_smem(dst_row, col), paged_k_cache_dmem(src_row, col));
       load_smem(v_buffer_smem(dst_row, col), paged_v_cache_dmem(src_row, col));
+      num_loaded_from_kv_cache++;
     } else {
       // load from QKV
       int src_row = dst_row + cp_finished_seq_len - (seq_len - num_tokens);
       load_smem(k_buffer_smem(dst_row, col), k_dmem(src_row, col));
       load_smem(v_buffer_smem(dst_row, col), v_dmem(src_row, col));
+      num_loaded_from_qkv++;
     }
   }
+  int warmup_launch_end = clock64();
   cp_async_fence();
   cp_finished_seq_len += curr_iter_len;
 
@@ -281,6 +301,9 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
       clear_8_floats(o[m][n]);
     }
   }
+  size_t warmup_wait_time = 0;
+  bool time_warmup_wait = true;
+  bool up_or_down;
 
   for (int iter = 0; iter < num_iters; iter++) {
     int next_iter_len = iter + 1 < num_iters
@@ -309,11 +332,41 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
           load_smem(v_smem(dst_row, col), v_dmem(src_row, col));
         }
       }
+#if PRINT_WARMUP_TIMING
+      if (time_warmup_wait) {
+        size_t warmup_wait_start = clock64();
+        cp_async_fence();
+        cp_async_wait<1>();
+        cp_finished_seq_len += next_iter_len;
+        size_t warmup_wait_end = clock64();
+        warmup_wait_time = warmup_wait_end - warmup_wait_start;
+        time_warmup_wait = false;
+        up_or_down = true;
+      } else {
+        cp_async_fence();
+        cp_async_wait<1>();
+        cp_finished_seq_len += next_iter_len;
+      }
+#else
       cp_async_fence();
       cp_async_wait<1>();
       cp_finished_seq_len += next_iter_len;
+#endif
     } else {
+#if PRINT_WARMUP_TIMING
+      if (time_warmup_wait) {
+        size_t warmup_wait_start = clock64();
+        cp_async_wait<0>();
+        size_t warmup_wait_end = clock64();
+        warmup_wait_time = warmup_wait_end - warmup_wait_start;
+        time_warmup_wait = false;
+        up_or_down = false;
+      } else {
+        cp_async_wait<0>();
+      }
+#else
       cp_async_wait<0>();
+#endif
     }
 
     // rotate the buffers
@@ -640,6 +693,14 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
     int dst_col = src_col + (src_row % NUM_QO_PER_KV) * HEAD_DIM;
     o_dmem.at(dst_row, dst_col) = o_smem.at(src_row, src_col);
   }
+#if PRINT_WARMUP_TIMING
+  size_t whole_function_end = clock64();
+  size_t warmup_launch_time = warmup_launch_end - warmup_launch_start;
+  // size_t warmup_launch_time = 0;
+  if (threadIdx.x == 1 && blockIdx.x == 5) {
+    printf("%llu cycles|%d seq len|%d num tokens|%d num chunks loaded from kv cache|%d num chunks loaded from qkv|%llu warmup launch time|%llu warmup wait time|%d up or down\n", whole_function_end - whole_function_start, seq_len, num_tokens, num_loaded_from_kv_cache, num_loaded_from_qkv, warmup_launch_time, warmup_wait_time, up_or_down);
+  }
+#endif
 }
 
 } // namespace kernel
