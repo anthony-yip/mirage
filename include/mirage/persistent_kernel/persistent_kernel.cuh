@@ -61,7 +61,8 @@ using namespace kernel;
 
 __device__ __forceinline__ void
     _execute_task(TaskDesc const *task_desc,
-                  RuntimeConfig const &runtime_config);
+                  RuntimeConfig const &runtime_config,
+                  size_t task_iteration_num);
 
 __global__ void init_kernel(RuntimeConfig config) {
   assert(gridDim.x == 1);
@@ -546,7 +547,8 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
     }
     TaskDesc *task_desc = task_descs + queue_pos;
     // Make sure task is ready before start execution
-    wait_for_event(task_desc, config, get_task_iteration_num(task_ids[queue_pos]));
+    size_t task_iteration_num = get_task_iteration_num(task_ids[queue_pos]);
+    wait_for_event(task_desc, config, task_iteration_num);
     // if (threadIdx.x == 0) {
     //   if (task_desc->dependent_event != EVENT_INVALID_ID) {
     //     // Wait until the event has been triggered enough times
@@ -602,7 +604,7 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
                task_desc->task_type);
       }
 #endif
-      _execute_task(task_desc, config);
+      _execute_task(task_desc, config, task_iteration_num);
     }
     __syncthreads();
 

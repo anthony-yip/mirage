@@ -290,7 +290,10 @@ int TaskRegister::register_paged_attention_task(
   code.e("    task_desc->input_ptrs[5],");
   code.e("    task_desc->input_ptrs[6],");
   code.e("    1e-6f,");
-  code.e("    1e-6f);");
+  code.e("    1e-6f,");
+  code.e("    task_desc,");
+  code.e("    runtime_config,");
+  code.e("    task_iteration_num);");
   return register_task_variant(TASK_PAGED_ATTENTION_1, code.to_string());
 }
 

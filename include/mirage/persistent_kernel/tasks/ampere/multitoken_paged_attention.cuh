@@ -22,11 +22,35 @@
 #include "rotary_embedding.cuh"
 #include "smem_layout.cuh"
 #include "tasks/common/common_header.cuh"
+#include "pk_utils.cuh"
 
 #define PRINT_SHARED_MEMORY_USAGE 0
 #define PRINT_WARMUP_TIMING 0
 
 namespace kernel {
+
+// // returns the final chunk_idx
+// __device__ __forceinline__ size_t load_from_kv_cache(size_t chunk_idx) {
+// #pragma unroll
+//   for (;
+//        chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
+//        chunk_idx += NUM_THREADS) {
+//     int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
+//     int col = (chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
+//     // cp_finished_seq_len is always 0 here
+//     if (dst_row + cp_finished_seq_len < seq_len - num_tokens) {
+//       // load from KV Cache
+//       // int page_idx = page_indices[(dst_row + cp_finished_seq_len) /
+//       // PAGE_SIZE];
+//       int page_offset = (dst_row + cp_finished_seq_len) % PAGE_SIZE;
+//       int src_row = page_idx_0 * PAGE_SIZE + page_offset;
+//       load_smem(k_buffer_smem(dst_row, col), paged_k_cache_dmem(src_row, col));
+//       load_smem(v_buffer_smem(dst_row, col), paged_v_cache_dmem(src_row, col));
+//     } else {
+//       break; // warps may diverge here
+//     }
+//   }
+// }
 
 // NOTE(Jinchen): this task implements the paged attention where a causal mask
 // is applied. In each task, we process one request with one or more tokens
@@ -57,7 +81,11 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
     void const *cos_ptr,
     void const *sin_ptr,
     float q_eps,
-    float k_eps) {
+    float k_eps,
+    TaskDesc const *task_desc,
+    RuntimeConfig const &config,
+    size_t task_iteration_num 
+  ) {
   size_t whole_function_start = clock64();
   constexpr int NUM_QO_PER_KV = NUM_QO_HEADS / NUM_KV_HEADS;
 
