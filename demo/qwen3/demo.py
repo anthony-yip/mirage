@@ -77,7 +77,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--model-path", type=str, default=None, help="Path to a local model (necessary for multi-GPU demo)")
     parser.add_argument(
-        "--model", type=str, default='Qwen/Qwen3-8B', help="Model path on hugging face"
+        "--model", type=str, default='Qwen/Qwen3-0.6B', help="Model path on hugging face"
     )
     parser.add_argument(
         "--no-use-cutlass-kernel",
@@ -209,7 +209,7 @@ if __name__ == "__main__":
 
         if args.profiling:
             profiler_tensor = torch.zeros(
-                300000 * 128, dtype=torch.uint64, device="cuda"
+                3000 * 128, dtype=torch.uint64, device="cuda"
             ).contiguous()
         else:
             profiler_tensor = None

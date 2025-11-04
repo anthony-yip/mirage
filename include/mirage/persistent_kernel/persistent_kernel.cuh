@@ -176,14 +176,14 @@ __device__ __forceinline__ bool
         }
       }
       config.step[request_id] = step + num_tokens;
-// #ifdef MPK_ENABLE_PROFILING
-//       if (true) {
-// #else
+#ifdef MPK_ENABLE_PROFILING
+      if (true) {
+#else
       if ((step + num_tokens >= config.max_seq_length) ||
           ((config.tokens[request_id * MPK_MAX_SEQ_LENGTH + step +
                           num_tokens] == config.eos_token_id) &&
            (step + num_tokens >= prompt_len))) {
-// #endif
+#endif
         // Request is done
         config.request_ids[i] = -1;
         // Free pages
@@ -293,12 +293,12 @@ __device__ __forceinline__ bool
     config.paged_kv_indptr_buffer[i] = num_pages;
   }
 
-  for (int i = 0; i <= MPK_MAX_NUM_BATCHED_REQUESTS; i++) {
-    // printf("request_ids[%d] is %d\n", i, config.request_ids[i]);
-    printf("%d, ", config.qo_indptr_buffer[i]);
-    // printf("paged_kv_indptr_buffer[%d] is %d\n", i, config.paged_kv_indptr_buffer[i]);
-  }
-  printf("\n");
+  // for (int i = 0; i <= MPK_MAX_NUM_BATCHED_REQUESTS; i++) {
+  //   // printf("request_ids[%d] is %d\n", i, config.request_ids[i]);
+  //   printf("%d, ", config.qo_indptr_buffer[i]);
+  //   // printf("paged_kv_indptr_buffer[%d] is %d\n", i, config.paged_kv_indptr_buffer[i]);
+  // }
+  // printf("\n");
 
   // Step 5: update page head tail
   *config.page_queue_head = page_queue_head;
