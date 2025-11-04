@@ -36,6 +36,7 @@
 #else
 #include "tasks/ampere/task_header.cuh"
 #endif
+#include "pk_utils.cuh"
 
 using bfloat16 = type::bfloat16_t;
 using namespace mirage::runtime;
@@ -61,36 +62,6 @@ using namespace kernel;
 __device__ __forceinline__ void
     _execute_task(TaskDesc const *task_desc,
                   RuntimeConfig const &runtime_config);
-
-__device__ __forceinline__ bool is_termination_event(size_t event_loc,
-                                                     EventDesc e) {
-  return (event_loc == 0);
-}
-
-__device__ __forceinline__ bool is_nvshmem_event(EventId event_id) {
-  return (event_id & EVENT_NVSHMEM_TAG) > 0;
-}
-
-__device__ __forceinline__ size_t get_event_gpu_id(EventId event_id) {
-  return ((event_id >> 32) & 0xffff);
-}
-
-__device__ __forceinline__ size_t get_event_position_index(EventId event_id) {
-  return (event_id & 0xffffffff);
-}
-
-__device__ __forceinline__ size_t get_task_iteration_num(TaskId task_id) {
-  return (task_id >> 32);
-}
-
-__device__ __forceinline__ size_t get_task_position_index(TaskId task_id) {
-  return (task_id & 0xffffffff);
-}
-
-__device__ __forceinline__ TaskId compute_task_id(size_t iteration_num,
-                                                  size_t position_index) {
-  return ((iteration_num << 32) | position_index);
-}
 
 __global__ void init_kernel(RuntimeConfig config) {
   assert(gridDim.x == 1);
@@ -575,25 +546,26 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
     }
     TaskDesc *task_desc = task_descs + queue_pos;
     // Make sure task is ready before start execution
-    if (threadIdx.x == 0) {
-      if (task_desc->dependent_event != EVENT_INVALID_ID) {
-        // Wait until the event has been triggered enough times
-        EventId event_id = task_desc->dependent_event;
-        assert(!is_nvshmem_event(event_id));
-        assert(get_event_gpu_id(event_id) == config.my_gpu_id);
-        size_t event_index = get_event_position_index(event_id);
-        EventCounter needed_counts =
-            static_cast<EventCounter>(
-                config.all_event_num_triggers[event_index]) *
-            get_task_iteration_num(task_ids[queue_pos]);
-        EventCounter actual_counts = 0;
-        while (actual_counts < needed_counts) {
-          actual_counts =
-              ld_acquire_gpu_u64(&config.all_event_counters[event_index]);
-          __nanosleep(10);
-        }
-      }
-    }
+    wait_for_event(task_desc, config, get_task_iteration_num(task_ids[queue_pos]));
+    // if (threadIdx.x == 0) {
+    //   if (task_desc->dependent_event != EVENT_INVALID_ID) {
+    //     // Wait until the event has been triggered enough times
+    //     EventId event_id = task_desc->dependent_event;
+    //     assert(!is_nvshmem_event(event_id));
+    //     assert(get_event_gpu_id(event_id) == config.my_gpu_id);
+    //     size_t event_index = get_event_position_index(event_id);
+    //     EventCounter needed_counts =
+    //         static_cast<EventCounter>(
+    //             config.all_event_num_triggers[event_index]) *
+    //         get_task_iteration_num(task_ids[queue_pos]);
+    //     EventCounter actual_counts = 0;
+    //     while (actual_counts < needed_counts) {
+    //       actual_counts =
+    //           ld_acquire_gpu_u64(&config.all_event_counters[event_index]);
+    //       __nanosleep(10);
+    //     }
+    //   }
+    // }
     __syncthreads();
 
 #ifdef MPK_ENABLE_PROFILING

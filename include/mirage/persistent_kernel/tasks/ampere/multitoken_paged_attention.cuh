@@ -236,25 +236,14 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
   // so that we access a single page in one iteration
   static_assert(PAGE_SIZE % KV_TILE_SIZE == 0);
 
-
-#pragma unroll
-  for (int chunk_idx = threadIdx.x;
-       chunk_idx < num_tokens * NUM_QO_PER_KV * HEAD_DIM / CP_CHUNK_SIZE;
-       chunk_idx += NUM_THREADS) {
-    int src_row = chunk_idx / (NUM_QO_PER_KV * HEAD_DIM / CP_CHUNK_SIZE);
-    int src_col = (chunk_idx % (NUM_QO_PER_KV * HEAD_DIM / CP_CHUNK_SIZE)) *
-                  CP_CHUNK_SIZE;
-    int dst_row = src_row * NUM_QO_PER_KV + src_col / HEAD_DIM;
-    int dst_col = src_col % HEAD_DIM;
-    load_smem(q_smem(dst_row, dst_col), q_dmem(src_row, src_col));
-  }
-
   int page_idx_0 = page_indices[0];
   int num_loaded_from_kv_cache = 0;
   int num_loaded_from_qkv = 0;
   int warmup_launch_start = clock64();
+
+  int chunk_idx = threadIdx.x;
 #pragma unroll
-  for (int chunk_idx = threadIdx.x;
+  for (;
        chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
        chunk_idx += NUM_THREADS) {
     int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
@@ -268,18 +257,11 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
       int src_row = page_idx_0 * PAGE_SIZE + page_offset;
       load_smem(k_buffer_smem(dst_row, col), paged_k_cache_dmem(src_row, col));
       load_smem(v_buffer_smem(dst_row, col), paged_v_cache_dmem(src_row, col));
-      num_loaded_from_kv_cache++;
     } else {
-      // load from QKV
-      int src_row = dst_row + cp_finished_seq_len - (seq_len - num_tokens);
-      load_smem(k_buffer_smem(dst_row, col), k_dmem(src_row, col));
-      load_smem(v_buffer_smem(dst_row, col), v_dmem(src_row, col));
-      num_loaded_from_qkv++;
+      break; // warps may diverge here
     }
   }
-  int warmup_launch_end = clock64();
-  cp_async_fence();
-  cp_finished_seq_len += curr_iter_len;
+  chunk_idx -= NUM_THREADS;
 
   float m_local[MMA_ITERS_M][2];
 #pragma unroll
@@ -301,6 +283,46 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
       clear_8_floats(o[m][n]);
     }
   }
+
+
+/// ^ SYNC POINT, you can now use the QKV pointer
+
+#pragma unroll
+  for (;
+       chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
+       chunk_idx += NUM_THREADS) {
+    int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
+    // cp_finished_seq_len is always 0 here
+    if (dst_row + cp_finished_seq_len < seq_len - num_tokens) {
+      continue;
+    } else {
+      int col = (chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
+      // load from QKV
+      int src_row = dst_row + cp_finished_seq_len - (seq_len - num_tokens);
+      load_smem(k_buffer_smem(dst_row, col), k_dmem(src_row, col));
+      load_smem(v_buffer_smem(dst_row, col), v_dmem(src_row, col));
+      num_loaded_from_qkv++;
+    }
+  }
+
+#pragma unroll
+  for (int chunk_idx = threadIdx.x;
+       chunk_idx < num_tokens * NUM_QO_PER_KV * HEAD_DIM / CP_CHUNK_SIZE;
+       chunk_idx += NUM_THREADS) {
+    int src_row = chunk_idx / (NUM_QO_PER_KV * HEAD_DIM / CP_CHUNK_SIZE);
+    int src_col = (chunk_idx % (NUM_QO_PER_KV * HEAD_DIM / CP_CHUNK_SIZE)) *
+                  CP_CHUNK_SIZE;
+    int dst_row = src_row * NUM_QO_PER_KV + src_col / HEAD_DIM;
+    int dst_col = src_col % HEAD_DIM;
+    load_smem(q_smem(dst_row, dst_col), q_dmem(src_row, src_col));
+  }
+
+
+  int warmup_launch_end = clock64();
+  cp_async_fence();
+  cp_finished_seq_len += curr_iter_len;
+
+
   size_t warmup_wait_time = 0;
   bool time_warmup_wait = true;
   bool up_or_down;
