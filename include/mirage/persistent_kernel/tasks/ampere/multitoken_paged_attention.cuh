@@ -131,23 +131,27 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
                       paged_kv_last_page_len_buffer_ptr[request_id];
   // valid_lens = [seq_len - num_tokens + 1 + i for i in range(num_tokens)]
 
-  // Load the paged KV indices into shared memory
+  // Load the paged KV indices into shared memory, 4 at a time
   __shared__ int page_indices[MAX_PAGES_PER_REQUEST];
+// #pragma unroll
+//   for (int i = threadIdx.x; i < num_pages * sizeof(int) / 16;
+//        i += NUM_THREADS) {
+//     __uint128_t const *src_ptr =
+//         reinterpret_cast<__uint128_t const *>(paged_kv_indices_buffer_ptr + first_page_pos) + i;
+//     __uint128_t *dst_ptr = reinterpret_cast<__uint128_t *>(page_indices) + i;
+//     *dst_ptr = *src_ptr;
+//   }
+//   if (num_pages % (16 / sizeof(int)) != 0) {
+//     int tail_pages = num_pages % (16 / sizeof(int));
+//     int tail_offset = num_pages - tail_pages;
+//     for (int i = threadIdx.x; i < tail_pages; i += NUM_THREADS) {
+//       page_indices[tail_offset + i] =
+//           paged_kv_indices_buffer_ptr[first_page_pos + tail_offset + i];
+//     }
+//   }
 #pragma unroll
-  for (int i = threadIdx.x; i < num_pages * sizeof(int) / 16;
-       i += NUM_THREADS) {
-    __uint128_t const *src_ptr =
-        reinterpret_cast<__uint128_t const *>(paged_kv_indices_buffer_ptr) + i;
-    __uint128_t *dst_ptr = reinterpret_cast<__uint128_t *>(page_indices) + i;
-    *dst_ptr = *src_ptr;
-  }
-  if (num_pages % (16 / sizeof(int)) != 0) {
-    int tail_pages = num_pages % (16 / sizeof(int));
-    int tail_offset = num_pages - tail_pages;
-    for (int i = threadIdx.x; i < tail_pages; i += NUM_THREADS) {
-      page_indices[tail_offset + i] =
-          paged_kv_indices_buffer_ptr[first_page_pos + tail_offset + i];
-    }
+  for (int i = threadIdx.x; i < num_pages; i += NUM_THREADS) {
+    page_indices[i] = paged_kv_indices_buffer_ptr[first_page_pos + i];
   }
   __syncthreads();
 
@@ -314,6 +318,7 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
 
 
 /// ^ SYNC POINT, you can now use the QKV pointer
+  wait_for_event(task_desc, config, task_iteration_num);
 
 #pragma unroll
   for (;

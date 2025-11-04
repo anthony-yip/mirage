@@ -107,7 +107,7 @@ if __name__ == "__main__":
     global print
     if rank != 0:
         print = lambda *_, **__: None
-    rank = 4
+    rank = 7
 
     print("Input arguments:", args)
     print(f"world_size({world_size}) rank({rank})")

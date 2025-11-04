@@ -548,27 +548,29 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
     TaskDesc *task_desc = task_descs + queue_pos;
     // Make sure task is ready before start execution
     size_t task_iteration_num = get_task_iteration_num(task_ids[queue_pos]);
-    wait_for_event(task_desc, config, task_iteration_num);
-    // if (threadIdx.x == 0) {
-    //   if (task_desc->dependent_event != EVENT_INVALID_ID) {
-    //     // Wait until the event has been triggered enough times
-    //     EventId event_id = task_desc->dependent_event;
-    //     assert(!is_nvshmem_event(event_id));
-    //     assert(get_event_gpu_id(event_id) == config.my_gpu_id);
-    //     size_t event_index = get_event_position_index(event_id);
-    //     EventCounter needed_counts =
-    //         static_cast<EventCounter>(
-    //             config.all_event_num_triggers[event_index]) *
-    //         get_task_iteration_num(task_ids[queue_pos]);
-    //     EventCounter actual_counts = 0;
-    //     while (actual_counts < needed_counts) {
-    //       actual_counts =
-    //           ld_acquire_gpu_u64(&config.all_event_counters[event_index]);
-    //       __nanosleep(10);
-    //     }
-    //   }
-    // }
-    __syncthreads();
+    if (task_desc->task_type != TASK_PAGED_ATTENTION_1) {
+    // if (true) {
+      wait_for_event(task_desc, config, task_iteration_num);
+      // if (threadIdx.x == 0) {
+      //   if (task_desc->dependent_event != EVENT_INVALID_ID) {
+      //     // Wait until the event has been triggered enough times
+      //     EventId event_id = task_desc->dependent_event;
+      //     assert(!is_nvshmem_event(event_id));
+      //     assert(get_event_gpu_id(event_id) == config.my_gpu_id);
+      //     size_t event_index = get_event_position_index(event_id);
+      //     EventCounter needed_counts =
+      //         static_cast<EventCounter>(
+      //             config.all_event_num_triggers[event_index]) *
+      //         get_task_iteration_num(task_ids[queue_pos]);
+      //     EventCounter actual_counts = 0;
+      //     while (actual_counts < needed_counts) {
+      //       actual_counts =
+      //           ld_acquire_gpu_u64(&config.all_event_counters[event_index]);
+      //       __nanosleep(10);
+      //     }
+      //   }
+      // }
+    }
 
 #ifdef MPK_ENABLE_PROFILING
     if (task_desc->task_type != TASK_TERMINATE) {
@@ -1077,7 +1079,7 @@ extern "C" void init_persistent_kernel(std::vector<void *> meta_tensors,
   global_runtime_config.per_worker_queue_len = 1024;
   global_runtime_config.per_sched_queue_len = 1024;
   global_runtime_config.num_gpus = npes;
-  global_runtime_config.my_gpu_id = 4;
+  global_runtime_config.my_gpu_id = 7;
   global_runtime_config.num_graphs = 1;
   global_runtime_config.split_worker_scheduler = true;
 
