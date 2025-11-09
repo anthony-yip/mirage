@@ -41,6 +41,7 @@ template <typename T_,
           int REDUCTION_SIZE,
           int O_STRIDE = OUTPUT_SIZE,
           int K_TILE_SIZE,
+          int EXTRA_INFO_SIZE,
           int PIPE_MAX = 3>
 __device__ __noinline__ void linear_kernel(void const *input_ptr,
                                               void const *weight_ptr,
@@ -49,7 +50,8 @@ __device__ __noinline__ void linear_kernel(void const *input_ptr,
                                               int num_active_tokens,
                                               bool residual,
                                               size_t *clock_cycles_mem,
-                                              size_t *clock_cycles_compute
+                                              size_t *clock_cycles_compute,
+                                              size_t *clock_cycles_extra
                                               ) {
 // template <typename Config>
 // __global__ void /* __launch_bounds__(128, 1) */
@@ -133,6 +135,7 @@ __device__ __noinline__ void linear_kernel(void const *input_ptr,
   size_t l_clock_cycles_mem[REDUCTION_SIZE / kTileK];
   size_t l_clock_cycles_compute[REDUCTION_SIZE / kTileK];
   size_t l_clock_cycles_mem_launch[REDUCTION_SIZE / kTileK];
+  size_t l_clock_cycles_extra[EXTRA_INFO_SIZE];
 
   if (LoopN != 1 || LoopM != 1) {
     asm("trap;");
@@ -384,11 +387,9 @@ __device__ __noinline__ void linear_kernel(void const *input_ptr,
         l_clock_cycles_mem[itile] = end_copy_async_wait - start_copy_async_wait;
         l_clock_cycles_mem_launch[itile] = end_copy_async_launch - start_copy_async_launch;
       } // itile
-      l_clock_cycles_compute[0] = time2 - time1;
-      l_clock_cycles_compute[1] = time3 - time2;
-      l_clock_cycles_compute[2] = time4 - time3;
-      l_clock_cycles_compute[4] = end_warmup - start_warmup;
-      l_clock_cycles_compute[5] = end_warmup_wait_sync - start_warmup_wait;
+      l_clock_cycles_extra[1] = end_warmup - start_warmup;
+      l_clock_cycles_extra[2] = end_warmup_wait_sync - start_warmup_wait;
+      
 
       // Epilogue: convert float accumulator result back to bfloat16_t and write back
       // use less shared memory as a scratchpad tile to use large wide instuction
@@ -452,7 +453,17 @@ __device__ __noinline__ void linear_kernel(void const *input_ptr,
         clock_cycles_mem[i] = l_clock_cycles_mem_launch[i];
       }
       // printf("l_clock_cycles_compute[%d]: %llu\n", i, l_clock_cycles_compute[i]);
+    }
+  }
+  if (threadIdx.x == 27 && blockIdx.x == 9) {
+    for (int i = 0; i < REDUCTION_SIZE / kTileK; ++i) {
       clock_cycles_compute[i] = l_clock_cycles_compute[i];
+    }
+  }
+  if (threadIdx.x == 48 && blockIdx.x == 2) {
+    // consider spreading this to another thread/block?
+    for (int i = 0; i < EXTRA_INFO_SIZE; ++i) {
+      clock_cycles_extra[i] = l_clock_cycles_extra[i];
     }
   }
   #endif
