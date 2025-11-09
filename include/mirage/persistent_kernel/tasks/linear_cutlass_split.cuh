@@ -40,6 +40,7 @@ template <typename T_,
           int OUTPUT_SIZE,
           int REDUCTION_SIZE,
           int O_STRIDE = OUTPUT_SIZE,
+          int K_TILE_SIZE,
           int PIPE_MAX = 3>
 __device__ __forceinline__ void linear_prefetch(void const *input_ptr,
                                               void const *weight_ptr,
@@ -49,7 +50,7 @@ __device__ __forceinline__ void linear_prefetch(void const *input_ptr,
   size_t time1, time2, time3, time4, time5;
   time1 = clock64();
   using T = std::conditional_t<std::is_same_v<T_, bfloat16>, cute::bfloat16_t, float>; // A temporary hack
-  constexpr int TILE_SIZE = 128;
+  constexpr int TILE_SIZE = K_TILE_SIZE;
   constexpr int kSmemLayoutCBatch = 1;
   using Config = config::GemmConfig<
     T, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, 16, 128, TILE_SIZE, PIPE_MAX, kSmemLayoutCBatch, float
@@ -170,6 +171,7 @@ template <typename T_,
           int OUTPUT_SIZE,
           int REDUCTION_SIZE,
           int O_STRIDE = OUTPUT_SIZE,
+          int K_TILE_SIZE,
           int PIPE_MAX = 3>
 __device__ __noinline__ void linear_main(void const *input_ptr,
                                               void const *weight_ptr,
@@ -189,7 +191,7 @@ __device__ __noinline__ void linear_main(void const *input_ptr,
 // __global__ void /* __launch_bounds__(128, 1) */
 // gemm_multi_stage(void *Dptr, const void *Aptr, const void *Bptr, const void *Rptr, int m, int n, int k) {
   using T = std::conditional_t<std::is_same_v<T_, bfloat16>, cute::bfloat16_t, float>; // A temporary hack
-  constexpr int TILE_SIZE = 128;
+  constexpr int TILE_SIZE = K_TILE_SIZE;
   constexpr int kSmemLayoutCBatch = 1;
   // TODO: Verify this is efficient
   // constexpr int PIPE_DEPTH = OUTPUT_SIZE < 256 ? 5 : PIPE_MAX;
@@ -236,7 +238,7 @@ __device__ __noinline__ void linear_main(void const *input_ptr,
   
   int idx = threadIdx.x;
 
-  #if 0
+  #if 1
   if (idx == 0) {
     printf("kTileM: %d, ", kTileM); 
     printf("kTileN: %d, ", kTileN);
@@ -244,9 +246,9 @@ __device__ __noinline__ void linear_main(void const *input_ptr,
     printf("LoopN: %d, ", LoopN);
     printf("kTileK: %d, ", kTileK);
     printf("kStage: %d, ", kStage);
-    printf("m: %d, ", m);
-    printf("n: %d, ", n);
-    printf("k: %d\n", k);
+    // printf("m: %d, ", m);
+    // printf("n: %d, ", n);
+    // printf("k: %d\n", k);
   }
   #endif
   
@@ -495,7 +497,7 @@ __device__ __noinline__ void linear_main(void const *input_ptr,
       size_t start_warmup, end_warmup;
       if (prefetch_next) {
         start_warmup = clock64();
-        linear_prefetch<T_, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, O_STRIDE, PIPE_MAX>(input_ptr_next, weight_ptr_next, smem_next, l_clock_cycles_compute);
+        linear_prefetch<T_, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, O_STRIDE, K_TILE_SIZE, PIPE_MAX>(input_ptr_next, weight_ptr_next, smem_next, l_clock_cycles_compute);
         end_warmup = clock64();
       } else {
         end_warmup = 747;

@@ -34,8 +34,8 @@ def max_factor_leq_n(m: int, n: int) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--use-mirage", action="store_true", help="Use Mirage kernels")
-    parser.add_argument("--max-num-batched-tokens", default=8, type=int, help="Max number of tokens in a batch")
-    parser.add_argument("--max-num-batched-requests", default=4, type=int, help="Max number of requests in a batch")
+    parser.add_argument("--max-num-batched-tokens", default=16, type=int, help="Max number of tokens in a batch")
+    parser.add_argument("--max-num-batched-requests", default=16, type=int, help="Max number of requests in a batch")
     parser.add_argument("--page-size", default=4096, type=int, help="Page size")
     parser.add_argument("--max-num-pages", default=16, type=int, help="Max num pages")
     parser.add_argument("--output-dir", help="Output files directory")
@@ -71,7 +71,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--model-path", type=str, default=None, help="Path to a local model (necessary for multi-GPU demo)")
     parser.add_argument(
-        "--model", type=str, default='Qwen/Qwen3-8B', help="Model path on hugging face"
+        "--model", type=str, default='Qwen/Qwen3-0.6B', help="Model path on hugging face"
     )
     args = parser.parse_args()
     try:
@@ -92,6 +92,8 @@ if __name__ == "__main__":
     global print
     if rank != 0:
         print = lambda *_, **__: None
+        
+    rank = 5
 
     print("Input arguments:", args)
     print(f"world_size({world_size}) rank({rank})")
@@ -147,6 +149,7 @@ if __name__ == "__main__":
     text = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
+    text = "Hello"
     model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
     for r in range(total_num_requests):
         for i in range(model_inputs.input_ids.shape[-1]):

@@ -1,5 +1,5 @@
 // #include "include/mirage/persistent_kernel/tasks/linear.cuh"
-#define MEASURE 1
+#define MEASURE 0
 #include "include/mirage/persistent_kernel/tasks/linear_cutlass.cuh"
 #include "include/mirage/persistent_kernel/tasks/linear_cutlass_split.cuh"
 #include <vector>
@@ -12,11 +12,12 @@ static constexpr int MAX_SHARE_MEMORY_SIZE = 160 * 1024;
 static constexpr size_t NUM_LAYERS = 30;
 static constexpr size_t SM_COUNT = 96;
 static constexpr size_t OUTPUT_SIZE = 64;
-static constexpr size_t REDUCTION_SIZE = 1024;
+static constexpr size_t REDUCTION_SIZE = 2048;
 static constexpr size_t BATCH_SIZE = 16;
-static constexpr bool USE_PIPELINE = false;
+static constexpr bool USE_PIPELINE = true;
 static constexpr size_t NUM_TRIALS = 100;
 static constexpr size_t NUM_WARMUP_TRIALS = 5;
+static constexpr size_t K_TILE_SIZE = 256;
 using bfloat16 = type::bfloat16_t;        // kernel::linear_prefetch<bfloat16, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, OUTPUT_SIZE * SM_COUNT>(input_ptr_next, weight_ptr_next, smem_next);
 
 __global__ void main_kernel(void *d_input, void *d_weight, void *d_output, size_t *clock_cycles_mem, size_t *clock_cycles_compute) {
@@ -24,7 +25,7 @@ __global__ void main_kernel(void *d_input, void *d_weight, void *d_output, size_
   
     if constexpr (USE_PIPELINE) {
       size_t time_start_prefetch = clock64();
-      kernel::linear_prefetch<bfloat16, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, OUTPUT_SIZE * SM_COUNT>(d_input, d_weight, smem, nullptr);
+      kernel::linear_prefetch<bfloat16, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, OUTPUT_SIZE * SM_COUNT, K_TILE_SIZE>(d_input, d_weight, smem, nullptr);
       size_t time_end_prefetch = clock64();
 
       for (size_t layer_num = 0; layer_num < NUM_LAYERS; layer_num++) {
@@ -39,7 +40,7 @@ __global__ void main_kernel(void *d_input, void *d_weight, void *d_output, size_
         // void * weight_ptr_next = (bfloat16 *)d_weight + ((layer_num + 1) * REDUCTION_SIZE * OUTPUT_SIZE * SM_COUNT) + (blockIdx.x * OUTPUT_SIZE);
         void * weight_ptr_next = (char*) weight_ptr + (REDUCTION_SIZE * OUTPUT_SIZE * SM_COUNT);
 
-        kernel::linear_main<bfloat16, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, OUTPUT_SIZE * SM_COUNT>(
+        kernel::linear_main<bfloat16, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, OUTPUT_SIZE * SM_COUNT, K_TILE_SIZE>(
         input_ptr,
         weight_ptr,
         nullptr,
@@ -51,13 +52,13 @@ __global__ void main_kernel(void *d_input, void *d_weight, void *d_output, size_
         input_ptr_next,
         weight_ptr_next,
         smem_next,
-        clock_cycles_mem + layer_num * (REDUCTION_SIZE / 128),
-        clock_cycles_compute + layer_num * (REDUCTION_SIZE / 128)
+        clock_cycles_mem + layer_num * (REDUCTION_SIZE / K_TILE_SIZE),
+        clock_cycles_compute + layer_num * (REDUCTION_SIZE / K_TILE_SIZE)
         );
 
       }
       #if MEASURE
-      clock_cycles_compute[NUM_LAYERS * REDUCTION_SIZE / 128 - 4] = time_end_prefetch - time_start_prefetch;
+      clock_cycles_compute[NUM_LAYERS * REDUCTION_SIZE / K_TILE_SIZE - 4] = time_end_prefetch - time_start_prefetch;
       #endif
     }
 
@@ -67,15 +68,15 @@ __global__ void main_kernel(void *d_input, void *d_weight, void *d_output, size_
         void * weight_ptr = (bfloat16 *)d_weight + (layer_num * REDUCTION_SIZE * OUTPUT_SIZE * SM_COUNT) + (blockIdx.x * OUTPUT_SIZE);
         void * output_ptr = (bfloat16 *)d_output + (layer_num * BATCH_SIZE * OUTPUT_SIZE * SM_COUNT) + (blockIdx.x * OUTPUT_SIZE);
 
-        kernel::linear_kernel<bfloat16, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, OUTPUT_SIZE * SM_COUNT>(
+        kernel::linear_kernel<bfloat16, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, OUTPUT_SIZE * SM_COUNT, K_TILE_SIZE>(
         input_ptr,
         weight_ptr,
         nullptr,
         output_ptr,
         BATCH_SIZE,
         false,
-        clock_cycles_mem + layer_num * (REDUCTION_SIZE / 128),
-        clock_cycles_compute + layer_num * (REDUCTION_SIZE / 128)
+        clock_cycles_mem + layer_num * (REDUCTION_SIZE / K_TILE_SIZE),
+        clock_cycles_compute + layer_num * (REDUCTION_SIZE / K_TILE_SIZE)
         );
       }
     }
@@ -137,8 +138,8 @@ int main() {
   // Allocate device memory for clock_cycles_mem and clock_cycles_compute
   size_t *d_clock_cycles_mem = nullptr;
   size_t *d_clock_cycles_compute = nullptr;
-  cudaMalloc(&d_clock_cycles_mem, NUM_LAYERS * (REDUCTION_SIZE / 128) * sizeof(size_t));
-  cudaMalloc(&d_clock_cycles_compute, NUM_LAYERS * (REDUCTION_SIZE / 128) * sizeof(size_t));
+  cudaMalloc(&d_clock_cycles_mem, NUM_LAYERS * (REDUCTION_SIZE / K_TILE_SIZE) * sizeof(size_t));
+  cudaMalloc(&d_clock_cycles_compute, NUM_LAYERS * (REDUCTION_SIZE / K_TILE_SIZE) * sizeof(size_t));
     
   // Launcher persistent kernel
   cudaFuncSetAttribute(main_kernel,
@@ -185,6 +186,7 @@ int main() {
   for (size_t i = 0; i < NUM_TRIALS; ++i) {
     printf("Elapsed time %zu: %f ms, ", i, all_elapsed_ms[i]);
   }
+  printf("\n");
 
   // Output the output tensors to a file for verification
   cudaMemcpy(h_output, d_output, output_size, cudaMemcpyDeviceToHost);
@@ -196,31 +198,31 @@ int main() {
   }
 
   // Write the clock_cycles_mem and clock_cycles_compute to a file
-  size_t *h_clock_cycles_mem = (size_t*)malloc(NUM_LAYERS * (REDUCTION_SIZE / 128) * sizeof(size_t));
-  size_t *h_clock_cycles_compute = (size_t*)malloc(NUM_LAYERS * (REDUCTION_SIZE / 128) * sizeof(size_t));
-  cudaMemcpy(h_clock_cycles_mem, d_clock_cycles_mem, NUM_LAYERS * (REDUCTION_SIZE / 128) * sizeof(size_t), cudaMemcpyDeviceToHost);
-  cudaMemcpy(h_clock_cycles_compute, d_clock_cycles_compute, NUM_LAYERS * (REDUCTION_SIZE / 128) * sizeof(size_t), cudaMemcpyDeviceToHost);
+  size_t *h_clock_cycles_mem = (size_t*)malloc(NUM_LAYERS * (REDUCTION_SIZE / K_TILE_SIZE) * sizeof(size_t));
+  size_t *h_clock_cycles_compute = (size_t*)malloc(NUM_LAYERS * (REDUCTION_SIZE / K_TILE_SIZE) * sizeof(size_t));
+  cudaMemcpy(h_clock_cycles_mem, d_clock_cycles_mem, NUM_LAYERS * (REDUCTION_SIZE / K_TILE_SIZE) * sizeof(size_t), cudaMemcpyDeviceToHost);
+  cudaMemcpy(h_clock_cycles_compute, d_clock_cycles_compute, NUM_LAYERS * (REDUCTION_SIZE / K_TILE_SIZE) * sizeof(size_t), cudaMemcpyDeviceToHost);
 
   size_t compute = 0;
   size_t launch = 0;
   size_t wait = 0;
   size_t warmup_launch = 0;
   size_t warmup_wait = 0;
-  for (int i = 0; i < NUM_LAYERS * (REDUCTION_SIZE / 128); i += REDUCTION_SIZE / 128) {
+  for (int i = 0; i < NUM_LAYERS * (REDUCTION_SIZE / K_TILE_SIZE); i += REDUCTION_SIZE / K_TILE_SIZE) {
     warmup_wait += h_clock_cycles_compute[i + 5];
     warmup_launch += h_clock_cycles_compute[i + 4];
     compute += (h_clock_cycles_compute[i + 6] + h_clock_cycles_compute[i + 7] + h_clock_cycles_compute[i + 3]) / 3;
     size_t acc_launch = 0;
     size_t acc_wait = 0;
-    for (int j = 0; j < REDUCTION_SIZE / 128; ++j) {
+    for (int j = 0; j < REDUCTION_SIZE / K_TILE_SIZE; ++j) {
       if (j % 2 == 0) {
         acc_wait += h_clock_cycles_mem[i + j];
       } else {
         acc_launch += h_clock_cycles_mem[i + j];
       }
     }
-    launch += (acc_launch / ((REDUCTION_SIZE / 128) / 2));
-    wait += (acc_wait / ((REDUCTION_SIZE / 128) / 2));
+    launch += (acc_launch / ((REDUCTION_SIZE / K_TILE_SIZE) / 2));
+    wait += (acc_wait / ((REDUCTION_SIZE / K_TILE_SIZE) / 2));
   }
 
   compute /= NUM_LAYERS;
@@ -228,6 +230,11 @@ int main() {
   warmup_launch /= NUM_LAYERS;
   launch /= NUM_LAYERS;
   wait /= NUM_LAYERS;
+  if constexpr (USE_PIPELINE) {
+    printf("Using pipeline\n");
+  } else {
+    printf("Not using pipeline\n");
+  }
   printf("Reporting average clock cycles for each layer:\n");
 
   printf("compute = %zu\n", compute);
@@ -236,7 +243,7 @@ int main() {
   printf("launch = %zu\n", launch);
   printf("wait = %zu\n", wait);
 
-  for (size_t i = 0; i < NUM_LAYERS * (REDUCTION_SIZE / 128); ++i) {
+  for (size_t i = 0; i < NUM_LAYERS * (REDUCTION_SIZE / K_TILE_SIZE); ++i) {
     printf("clock_cycles_mem[%zu] = %zu\n", i, h_clock_cycles_mem[i]);
     printf("clock_cycles_compute[%zu] = %zu\n", i, h_clock_cycles_compute[i]);
   }

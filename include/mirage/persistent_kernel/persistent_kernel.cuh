@@ -1039,7 +1039,7 @@ extern "C" void init_persistent_kernel(std::vector<void *> meta_tensors,
   global_runtime_config.per_worker_queue_len = 1024;
   global_runtime_config.per_sched_queue_len = 1024;
   global_runtime_config.num_gpus = npes;
-  global_runtime_config.my_gpu_id = mype;
+  global_runtime_config.my_gpu_id = 5;
   global_runtime_config.num_graphs = 1;
   global_runtime_config.split_worker_scheduler = true;
 

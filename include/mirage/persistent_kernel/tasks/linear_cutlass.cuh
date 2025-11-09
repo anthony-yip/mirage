@@ -40,6 +40,7 @@ template <typename T_,
           int OUTPUT_SIZE,
           int REDUCTION_SIZE,
           int O_STRIDE = OUTPUT_SIZE,
+          int K_TILE_SIZE,
           int PIPE_MAX = 3>
 __device__ __noinline__ void linear_kernel(void const *input_ptr,
                                               void const *weight_ptr,
@@ -54,7 +55,7 @@ __device__ __noinline__ void linear_kernel(void const *input_ptr,
 // __global__ void /* __launch_bounds__(128, 1) */
 // gemm_multi_stage(void *Dptr, const void *Aptr, const void *Bptr, const void *Rptr, int m, int n, int k) {
   using T = std::conditional_t<std::is_same_v<T_, bfloat16>, cute::bfloat16_t, float>; // A temporary hack
-  constexpr int TILE_SIZE = 128;
+  constexpr int TILE_SIZE = K_TILE_SIZE;
   constexpr int kSmemLayoutCBatch = 1;
   // TODO: Verify this is efficient
   // constexpr int PIPE_DEPTH = OUTPUT_SIZE < 256 ? 5 : PIPE_MAX;
@@ -444,14 +445,14 @@ __device__ __noinline__ void linear_kernel(void const *input_ptr,
   if (threadIdx.x == 6 && blockIdx.x == 12) {
     for (int i = 0; i < REDUCTION_SIZE / kTileK; ++i) {
       if (i % 2 == 0) {
-        printf("l_clock_cycles_mem[%d]: %llu\n", i, l_clock_cycles_mem[i]);
-        // clock_cycles_mem[i] = l_clock_cycles_mem[i];
+        // printf("l_clock_cycles_mem[%d]: %llu\n", i, l_clock_cycles_mem[i]);
+        clock_cycles_mem[i] = l_clock_cycles_mem[i];
       } else {
-        printf("l_clock_cycles_mem_launch[%d]: %llu\n", i, l_clock_cycles_mem_launch[i]);
-        // clock_cycles_mem[i] = l_clock_cycles_mem_launch[i];
+        // printf("l_clock_cycles_mem_launch[%d]: %llu\n", i, l_clock_cycles_mem_launch[i]);
+        clock_cycles_mem[i] = l_clock_cycles_mem_launch[i];
       }
-      printf("l_clock_cycles_compute[%d]: %llu\n", i, l_clock_cycles_compute[i]);
-      // clock_cycles_compute[i] = l_clock_cycles_compute[i];
+      // printf("l_clock_cycles_compute[%d]: %llu\n", i, l_clock_cycles_compute[i]);
+      clock_cycles_compute[i] = l_clock_cycles_compute[i];
     }
   }
   #endif
