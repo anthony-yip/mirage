@@ -443,27 +443,29 @@ __device__ __noinline__ void linear_kernel(void const *input_ptr,
   } // m_iter < LoopM 1
 
   #if MEASURE
-  if (threadIdx.x == 6 && blockIdx.x == 12) {
-    for (int i = 0; i < REDUCTION_SIZE / kTileK; ++i) {
-      if (i % 2 == 0) {
-        // printf("l_clock_cycles_mem[%d]: %llu\n", i, l_clock_cycles_mem[i]);
-        clock_cycles_mem[i] = l_clock_cycles_mem[i];
-      } else {
-        // printf("l_clock_cycles_mem_launch[%d]: %llu\n", i, l_clock_cycles_mem_launch[i]);
-        clock_cycles_mem[i] = l_clock_cycles_mem_launch[i];
+  if (clock_cycles_mem != nullptr) {
+    if (threadIdx.x == 6 && blockIdx.x == 12) {
+      for (int i = 0; i < REDUCTION_SIZE / kTileK; ++i) {
+        if (i % 2 == 0) {
+          // printf("l_clock_cycles_mem[%d]: %llu\n", i, l_clock_cycles_mem[i]);
+          clock_cycles_mem[i] = l_clock_cycles_mem[i];
+        } else {
+          // printf("l_clock_cycles_mem_launch[%d]: %llu\n", i, l_clock_cycles_mem_launch[i]);
+          clock_cycles_mem[i] = l_clock_cycles_mem_launch[i];
+        }
+        // printf("l_clock_cycles_compute[%d]: %llu\n", i, l_clock_cycles_compute[i]);
       }
-      // printf("l_clock_cycles_compute[%d]: %llu\n", i, l_clock_cycles_compute[i]);
     }
-  }
-  if (threadIdx.x == 27 && blockIdx.x == 9) {
-    for (int i = 0; i < REDUCTION_SIZE / kTileK; ++i) {
-      clock_cycles_compute[i] = l_clock_cycles_compute[i];
+    if (threadIdx.x == 27 && blockIdx.x == 9) {
+      for (int i = 0; i < REDUCTION_SIZE / kTileK; ++i) {
+        clock_cycles_compute[i] = l_clock_cycles_compute[i];
+      }
     }
-  }
-  if (threadIdx.x == 48 && blockIdx.x == 2) {
-    // consider spreading this to another thread/block?
-    for (int i = 0; i < EXTRA_INFO_SIZE; ++i) {
-      clock_cycles_extra[i] = l_clock_cycles_extra[i];
+    if (threadIdx.x == 48 && blockIdx.x == 2) {
+      // consider spreading this to another thread/block?
+      for (int i = 0; i < EXTRA_INFO_SIZE; ++i) {
+        clock_cycles_extra[i] = l_clock_cycles_extra[i];
+      }
     }
   }
   #endif

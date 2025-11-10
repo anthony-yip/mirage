@@ -10,19 +10,19 @@
 static constexpr int SINGLE_KERNEL_THREADS = 128;
 static constexpr int MAX_SHARE_MEMORY_SIZE = 160 * 1024;
 static constexpr size_t NUM_LAYERS = 30;
-static constexpr size_t SM_COUNT = 16;
+static constexpr size_t SM_COUNT = 96;
 static constexpr size_t OUTPUT_SIZE = 64;
-static constexpr size_t REDUCTION_SIZE = 2048;
+static constexpr size_t REDUCTION_SIZE = 1024;
 static constexpr size_t BATCH_SIZE = 1;
 static constexpr bool USE_PIPELINE = false;
 static constexpr size_t NUM_TRIALS = 100;
 static constexpr size_t NUM_WARMUP_TRIALS = 5;
-static constexpr size_t K_TILE_SIZE = 128;
+static constexpr size_t K_TILE_SIZE = 256;
 static constexpr size_t EXTRA_INFO_SIZE = 8;
 static constexpr size_t FORLOOP_LENGTH = REDUCTION_SIZE / K_TILE_SIZE;
 using bfloat16 = type::bfloat16_t;        // kernel::linear_prefetch<bfloat16, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, OUTPUT_SIZE * SM_COUNT>(input_ptr_next, weight_ptr_next, smem_next);
 
-__global__ void main_kernel(void *d_input, void *d_weight, void *d_output, size_t *clock_cycles_mem, size_t *clock_cycles_compute, size_t *clock_cycles_extra) {
+__global__ void main_kernel(void *d_input, void *d_weight, void *d_output, size_t *clock_cycles_mem, size_t *clock_cycles_compute, size_t *clock_cycles_extra, bool write_measurements) {
     extern __shared__ char smem[];
   
     if constexpr (USE_PIPELINE) {
@@ -71,6 +71,14 @@ __global__ void main_kernel(void *d_input, void *d_weight, void *d_output, size_
         void * output_ptr = (bfloat16 *)d_output + (layer_num * BATCH_SIZE * OUTPUT_SIZE * SM_COUNT) + (blockIdx.x * OUTPUT_SIZE);
 
         size_t kernel_start = clock64();
+        size_t *clock_cycles_mem_ptr = nullptr;
+        size_t *clock_cycles_compute_ptr = nullptr;
+        size_t *clock_cycles_extra_ptr = nullptr;
+        if (write_measurements) {
+          clock_cycles_mem_ptr = clock_cycles_mem + layer_num * (REDUCTION_SIZE / K_TILE_SIZE);
+          clock_cycles_compute_ptr = clock_cycles_compute + layer_num * (REDUCTION_SIZE / K_TILE_SIZE);
+          clock_cycles_extra_ptr = clock_cycles_extra + layer_num * (EXTRA_INFO_SIZE);
+        }
         kernel::linear_kernel<bfloat16, BATCH_SIZE, OUTPUT_SIZE, REDUCTION_SIZE, OUTPUT_SIZE * SM_COUNT, K_TILE_SIZE, EXTRA_INFO_SIZE>(
         input_ptr,
         weight_ptr,
@@ -78,14 +86,16 @@ __global__ void main_kernel(void *d_input, void *d_weight, void *d_output, size_
         output_ptr,
         BATCH_SIZE,
         false,
-        clock_cycles_mem + layer_num * (REDUCTION_SIZE / K_TILE_SIZE),
-        clock_cycles_compute + layer_num * (REDUCTION_SIZE / K_TILE_SIZE),
-        clock_cycles_extra + layer_num * (EXTRA_INFO_SIZE)
+        clock_cycles_mem_ptr,
+        clock_cycles_compute_ptr,
+        clock_cycles_extra_ptr
         );
         size_t kernel_end = clock64();
         #if MEASURE
-        if (threadIdx.x == 10 && blockIdx.x == 4) {
-         clock_cycles_extra[layer_num * (EXTRA_INFO_SIZE) + 0] = kernel_end - kernel_start;
+        if (write_measurements) {
+          if (threadIdx.x == 10 && blockIdx.x == 4) {
+          clock_cycles_extra[layer_num * (EXTRA_INFO_SIZE) + 0] = kernel_end - kernel_start;
+          }
         }
         #endif
       }
@@ -171,7 +181,7 @@ int main() {
   for (size_t i = 0; i < NUM_WARMUP_TRIALS; ++i) {
     main_kernel<<<dim3(sm_count, 1, 1),
                       dim3(SINGLE_KERNEL_THREADS, 1, 1),
-                      MAX_SHARE_MEMORY_SIZE /*smem*/>>>(d_input, d_weight, d_output, d_clock_cycles_mem, d_clock_cycles_compute, d_clock_cycles_extra);
+                      MAX_SHARE_MEMORY_SIZE /*smem*/>>>(d_input, d_weight, d_output, d_clock_cycles_mem, d_clock_cycles_compute, d_clock_cycles_extra, false);
   }
   std::array<float, NUM_TRIALS> all_elapsed_ms;
   for (size_t i = 0; i < NUM_TRIALS; ++i) {
@@ -181,7 +191,7 @@ int main() {
     cudaEventRecord(start);
     main_kernel<<<dim3(sm_count, 1, 1),
                       dim3(SINGLE_KERNEL_THREADS, 1, 1),
-                      MAX_SHARE_MEMORY_SIZE /*smem*/>>>(d_input, d_weight, d_output, d_clock_cycles_mem, d_clock_cycles_compute, d_clock_cycles_extra);
+                      MAX_SHARE_MEMORY_SIZE /*smem*/>>>(d_input, d_weight, d_output, d_clock_cycles_mem, d_clock_cycles_compute, d_clock_cycles_extra, i == (NUM_TRIALS / 2));
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaError_t err = cudaDeviceSynchronize();
