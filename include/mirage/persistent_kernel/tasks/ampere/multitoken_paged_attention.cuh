@@ -29,6 +29,28 @@
 
 namespace kernel {
 
+// // returns the final chunk_idx
+// __device__ __forceinline__ size_t load_from_kv_cache(size_t chunk_idx) {
+// #pragma unroll
+//   for (;
+//        chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
+//        chunk_idx += NUM_THREADS) {
+//     int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
+//     int col = (chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
+//     // cp_finished_seq_len is always 0 here
+//     if (dst_row + cp_finished_seq_len < seq_len - num_tokens) {
+//       // load from KV Cache
+//       // int page_idx = page_indices[(dst_row + cp_finished_seq_len) /
+//       // PAGE_SIZE];
+//       int page_offset = (dst_row + cp_finished_seq_len) % PAGE_SIZE;
+//       int src_row = page_idx_0 * PAGE_SIZE + page_offset;
+//       load_smem(k_buffer_smem(dst_row, col), paged_k_cache_dmem(src_row, col));
+//       load_smem(v_buffer_smem(dst_row, col), paged_v_cache_dmem(src_row, col));
+//     } else {
+//       break; // warps may diverge here
+//     }
+//   }
+// }
 
 // NOTE(Jinchen): this task implements the paged attention where a causal mask
 // is applied. In each task, we process one request with one or more tokens
@@ -251,32 +273,26 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
   int num_loaded_from_qkv = 0;
   int warmup_launch_start = clock64();
 
-
-  // lambda function
-  auto load_kv_from_cache = [=](int chunk_idx, int curr_iter_len, int cp_finished_seq_len, int page_idx, KVSmem &k_buffer_smem, KVSmem &v_buffer_smem, KVCacheDmem &paged_k_cache_dmem, KVCacheDmem &paged_v_cache_dmem) -> int {
-  #pragma unroll
-    for (;
-        chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
-        chunk_idx += NUM_THREADS) {
-      int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
-      int col = (chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
-      // cp_finished_seq_len is always 0 here
-      if (dst_row + cp_finished_seq_len < seq_len - num_tokens) {
-        // load from KV Cache
-        // int page_idx = page_indices[(dst_row + cp_finished_seq_len) /
-        // PAGE_SIZE];
-        int page_offset = (dst_row + cp_finished_seq_len) % PAGE_SIZE;
-        int src_row = page_idx * PAGE_SIZE + page_offset;
-        load_smem(k_buffer_smem(dst_row, col), paged_k_cache_dmem(src_row, col));
-        load_smem(v_buffer_smem(dst_row, col), paged_v_cache_dmem(src_row, col));
-      } else {
-        break; // warps may diverge here
-      }
+  int chunk_idx = threadIdx.x;
+#pragma unroll
+  for (;
+       chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
+       chunk_idx += NUM_THREADS) {
+    int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
+    int col = (chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
+    // cp_finished_seq_len is always 0 here
+    if (dst_row + cp_finished_seq_len < seq_len - num_tokens) {
+      // load from KV Cache
+      // int page_idx = page_indices[(dst_row + cp_finished_seq_len) /
+      // PAGE_SIZE];
+      int page_offset = (dst_row + cp_finished_seq_len) % PAGE_SIZE;
+      int src_row = page_idx_0 * PAGE_SIZE + page_offset;
+      load_smem(k_buffer_smem(dst_row, col), paged_k_cache_dmem(src_row, col));
+      load_smem(v_buffer_smem(dst_row, col), paged_v_cache_dmem(src_row, col));
+    } else {
+      break; // warps may diverge here
     }
-    return chunk_idx;
-  };
-
-  int chunk_idx = load_kv_from_cache(threadIdx.x, curr_iter_len, cp_finished_seq_len, page_idx_0, k_buffer_smem, v_buffer_smem, paged_k_cache_dmem, paged_v_cache_dmem);
+  }
   chunk_idx -= NUM_THREADS;
 
   float m_local[MMA_ITERS_M][2];
@@ -299,65 +315,28 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
       clear_8_floats(o[m][n]);
     }
   }
-  // int second_iter_chunk_idx = 0;
-//   // ^ More potential for optimization here
-//   // fyi, this should be mutually exclusive with the following for loop
-  int second_iter_len = 1 < num_iters ? min(seq_len - curr_iter_len, KV_TILE_SIZE) : 0;
-  int second_iter_chunk_idx = threadIdx.x;
-  if (second_iter_len > 0) {
-    // int page_idx = page_indices[curr_iter_len / PAGE_SIZE];
-    // second_iter_chunk_idx = load_kv_from_cache(second_iter_chunk_idx, curr_iter_len, cp_finished_seq_len, page_idx, k_buffer_smem, v_buffer_smem, paged_k_cache_dmem, paged_v_cache_dmem);
-    // second_iter_chunk_idx -= NUM_THREADS;
-      int page_idx = page_indices[cp_finished_seq_len + curr_iter_len / PAGE_SIZE];
-#pragma unroll
-      for (;
-          second_iter_chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
-          second_iter_chunk_idx += NUM_THREADS) {
-        int dst_row = second_iter_chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
-        int col = (second_iter_chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
-        if (dst_row + cp_finished_seq_len + curr_iter_len < seq_len - num_tokens) {
-          // // load from KV Cache
-          // // int page_idx =
-          // //    page_indices[(dst_row + cp_finished_seq_len) / PAGE_SIZE];
-          int page_offset = (dst_row + cp_finished_seq_len + curr_iter_len) % PAGE_SIZE;
-          int src_row = page_idx * PAGE_SIZE + page_offset;
-          load_smem(k_smem(dst_row, col), paged_k_cache_dmem(src_row, col));
-          load_smem(v_smem(dst_row, col), paged_v_cache_dmem(src_row, col));
-        } else {
-          break;
-          // load from QKV
-          // int src_row = dst_row + cp_finished_seq_len - (seq_len - num_tokens);
-          // load_smem(k_smem(dst_row, col), k_dmem(src_row, col));
-          // load_smem(v_smem(dst_row, col), v_dmem(src_row, col));
-        }
-      }
-      second_iter_chunk_idx -= NUM_THREADS;
-  }
-//   __syncthreads();
-  
-  auto load_kv_from_qkv = [=](int chunk_idx, int curr_iter_len, int cp_finished_seq_len, KVSmem &k_buffer_smem, KVSmem &v_buffer_smem, const KVDmem &k_dmem, const KVDmem &v_dmem) -> void {
-  #pragma unroll
-    for (;
-        chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
-        chunk_idx += NUM_THREADS) {
-      int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
-      // cp_finished_seq_len is always 0 here
-      if (dst_row + cp_finished_seq_len < seq_len - num_tokens) {
-        continue;
-      } else {
-        int col = (chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
-        // load from QKV
-        int src_row = dst_row + cp_finished_seq_len - (seq_len - num_tokens);
-        load_smem(k_buffer_smem(dst_row, col), k_dmem(src_row, col));
-        load_smem(v_buffer_smem(dst_row, col), v_dmem(src_row, col));
-      }
-    }
-  };
+
 
 /// ^ SYNC POINT, you can now use the QKV pointer
   wait_for_event(task_desc, config, task_iteration_num);
 
-  load_kv_from_qkv(chunk_idx, curr_iter_len, cp_finished_seq_len, k_buffer_smem, v_buffer_smem, k_dmem, v_dmem);
+#pragma unroll
+  for (;
+       chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
+       chunk_idx += NUM_THREADS) {
+    int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
+    // cp_finished_seq_len is always 0 here
+    if (dst_row + cp_finished_seq_len < seq_len - num_tokens) {
+      continue;
+    } else {
+      int col = (chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
+      // load from QKV
+      int src_row = dst_row + cp_finished_seq_len - (seq_len - num_tokens);
+      load_smem(k_buffer_smem(dst_row, col), k_dmem(src_row, col));
+      load_smem(v_buffer_smem(dst_row, col), v_dmem(src_row, col));
+      num_loaded_from_qkv++;
+    }
+  }
 
 #pragma unroll
   for (int chunk_idx = threadIdx.x;
@@ -386,49 +365,26 @@ __device__ __forceinline__ void multitoken_paged_attention_task_impl(
                             ? min(seq_len - cp_finished_seq_len, KV_TILE_SIZE)
                             : 0;
     if (next_iter_len > 0) {
-      if (iter == 0) {
-        // call the second lambda function
-        // int page_idx = page_indices[cp_finished_seq_len / PAGE_SIZE];
-        // load_kv_from_cache(threadIdx.x, curr_iter_len, cp_finished_seq_len, page_idx, k_buffer_smem, v_buffer_smem, paged_k_cache_dmem, paged_v_cache_dmem);
-        // load_kv_from_qkv(threadIdx.x, curr_iter_len, cp_finished_seq_len, k_buffer_smem, v_buffer_smem, k_dmem, v_dmem);
-  #pragma unroll
-        for (int chunk_idx = second_iter_chunk_idx;
-            chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
-            chunk_idx += NUM_THREADS) {
-          int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
-          int col = (chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
-          if (dst_row + cp_finished_seq_len < seq_len - num_tokens) {
-            continue;
-          } else {
-            // load from QKV
-            int src_row = dst_row + cp_finished_seq_len - (seq_len - num_tokens);
-            load_smem(k_smem(dst_row, col), k_dmem(src_row, col));
-            load_smem(v_smem(dst_row, col), v_dmem(src_row, col));
-          }
-        }
-      } else
-      {
-        int page_idx = page_indices[cp_finished_seq_len / PAGE_SIZE];
-  #pragma unroll
-        for (int chunk_idx = threadIdx.x;
-            chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
-            chunk_idx += NUM_THREADS) {
-          int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
-          int col = (chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
-          if (dst_row + cp_finished_seq_len < seq_len - num_tokens) {
-            // load from KV Cache
-            // int page_idx =
-            //    page_indices[(dst_row + cp_finished_seq_len) / PAGE_SIZE];
-            int page_offset = (dst_row + cp_finished_seq_len) % PAGE_SIZE;
-            int src_row = page_idx * PAGE_SIZE + page_offset;
-            load_smem(k_smem(dst_row, col), paged_k_cache_dmem(src_row, col));
-            load_smem(v_smem(dst_row, col), paged_v_cache_dmem(src_row, col));
-          } else {
-            // load from QKV
-            int src_row = dst_row + cp_finished_seq_len - (seq_len - num_tokens);
-            load_smem(k_smem(dst_row, col), k_dmem(src_row, col));
-            load_smem(v_smem(dst_row, col), v_dmem(src_row, col));
-          }
+      int page_idx = page_indices[cp_finished_seq_len / PAGE_SIZE];
+#pragma unroll
+      for (int chunk_idx = threadIdx.x;
+           chunk_idx < curr_iter_len * HEAD_DIM / CP_CHUNK_SIZE;
+           chunk_idx += NUM_THREADS) {
+        int dst_row = chunk_idx / (HEAD_DIM / CP_CHUNK_SIZE);
+        int col = (chunk_idx % (HEAD_DIM / CP_CHUNK_SIZE)) * CP_CHUNK_SIZE;
+        if (dst_row + cp_finished_seq_len < seq_len - num_tokens) {
+          // load from KV Cache
+          // int page_idx =
+          //    page_indices[(dst_row + cp_finished_seq_len) / PAGE_SIZE];
+          int page_offset = (dst_row + cp_finished_seq_len) % PAGE_SIZE;
+          int src_row = page_idx * PAGE_SIZE + page_offset;
+          load_smem(k_smem(dst_row, col), paged_k_cache_dmem(src_row, col));
+          load_smem(v_smem(dst_row, col), paged_v_cache_dmem(src_row, col));
+        } else {
+          // load from QKV
+          int src_row = dst_row + cp_finished_seq_len - (seq_len - num_tokens);
+          load_smem(k_smem(dst_row, col), k_dmem(src_row, col));
+          load_smem(v_smem(dst_row, col), v_dmem(src_row, col));
         }
       }
 #if PRINT_WARMUP_TIMING
