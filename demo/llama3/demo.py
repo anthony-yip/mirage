@@ -26,12 +26,12 @@ def parse_arguments():
     
     parser.add_argument("--model-path", type=str, default=None,
                        help="Path to a local model (necessary for multi-GPU demo)")
-    parser.add_argument("--model", type=str, default='meta-llama/Meta-Llama-3-8B-Instruct',
+    parser.add_argument("--model", type=str, default='meta-llama/Llama-3.2-1B-Instruct',
                        help="Model path on hugging face")
     
-    parser.add_argument("--max-num-batched-tokens", type=int, default=8,
+    parser.add_argument("--max-num-batched-tokens", type=int, default=1,
                        help="Max number of tokens in a batch")
-    parser.add_argument("--max-num-batched-requests", default=4, type=int,
+    parser.add_argument("--max-num-batched-requests", default=1, type=int,
                        help="Max number of requests in a batch")
     parser.add_argument("--page-size", default=4096, type=int,
                        help="Page size")
@@ -165,6 +165,7 @@ def prepare_input_tensors(model, tokenizer, messages, args, use_mirage=True):
     text = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
+    text = "Hello"
     model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
     print("Model input id shape:", model_inputs.input_ids.shape)
     num_requests = args.max_num_batched_requests if use_mirage else 1
